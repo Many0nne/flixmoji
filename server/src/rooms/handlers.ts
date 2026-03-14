@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io'
 import { ClientToServerEvents, ServerToClientEvents, Room, Player, Round } from '../types'
 import { createRoom, getRoomBySocketId, toPublicState, pickNextDescriber, buildGameSummary } from './room'
-import { startRound, computePoints, buildRoundReveal } from './round'
+import { startRound, computeGuesserPoints, buildRoundReveal } from './round'
 
 type IO = Server<ClientToServerEvents, ServerToClientEvents>
 type Sock = Socket<ClientToServerEvents, ServerToClientEvents>
@@ -41,6 +41,17 @@ export function registerRoomHandlers(io: IO, socket: Sock, rooms: Map<string, Ro
     io.to(roomId).emit('room:updated', toPublicState(room))
   })
 
+  // ─── Update config (host only) ──────────────────────────────────────────────
+  socket.on('room:update-config', (partial, callback) => {
+    const room = getRoomBySocketId(rooms, socket.id)
+    if (!room) return callback('Salon introuvable.')
+    if (room.hostSocketId !== socket.id) return callback('Seul l\'hôte peut modifier la config.')
+    if (room.status !== 'lobby') return callback('La partie a déjà commencé.')
+    room.config = { ...room.config, ...partial }
+    io.to(room.id).emit('room:updated', toPublicState(room))
+    callback(null)
+  })
+
   // ─── Start game (host only) ──────────────────────────────────────────────────
   socket.on('room:start', (callback) => {
     const room = getRoomBySocketId(rooms, socket.id)
@@ -57,19 +68,8 @@ export function registerRoomHandlers(io: IO, socket: Sock, rooms: Map<string, Ro
     console.log(`[room:start] ${room.id} — round 1`)
     io.to(room.id).emit('room:updated', toPublicState(room))
 
-    // Send the secret film info only to the describer
     const describer = room.players.find(p => p.isDescriber)
-    if (describer) {
-      io.to(describer.socketId).emit('round:started', {
-        roundNumber: round.roundNumber,
-        describerPseudo: describer.pseudo,
-        status: round.status,
-        timerDuration: round.timerDuration,
-        maxEmojis: room.config.maxEmojis,
-      })
-    }
-    // Everyone else gets a redacted round state
-    socket.to(room.id).emit('round:started', {
+    io.to(room.id).emit('round:started', {
       roundNumber: round.roundNumber,
       describerPseudo: describer?.pseudo ?? '',
       status: round.status,
@@ -139,12 +139,18 @@ export function registerRoomHandlers(io: IO, socket: Sock, rooms: Map<string, Ro
 
     const round = room.currentRound
     const playerGuesses = round.guesses.filter(g => g.playerSocketId === socket.id)
+
+    // Block if already found
+    if (playerGuesses.some(g => g.isCorrect)) {
+      return callback(null, 'Tu as déjà trouvé !')
+    }
+
     const attemptNumber = playerGuesses.length + 1
     const isCorrect = movieId === round.movieId
 
     const timerStartedAt = round.timerStartedAt ?? Date.now()
     const elapsed = Date.now() - timerStartedAt
-    const points = isCorrect ? computePoints(elapsed, round.timerDuration, attemptNumber) : 0
+    const points = isCorrect ? computeGuesserPoints(elapsed, round.timerDuration, attemptNumber) : 0
 
     const guess = {
       playerSocketId: socket.id,
@@ -164,12 +170,16 @@ export function registerRoomHandlers(io: IO, socket: Sock, rooms: Map<string, Ro
     const result = { playerPseudo: player.pseudo, isCorrect, pointsAwarded: points, attemptNumber }
     io.to(room.id).emit('round:guess-result', result)
 
-    // Update describer on correct count
-    const correctCount = round.guesses.filter(g => g.isCorrect).length
-    const describer = room.players.find(p => p.isDescriber)
-    if (describer) {
-      // We reuse room:updated to update scores in real time
-      io.to(room.id).emit('room:updated', toPublicState(room))
+    io.to(room.id).emit('room:updated', toPublicState(room))
+
+    // End round early only when every guesser has found the correct answer
+    const guessers = room.players.filter(p => !p.isDescriber)
+    const allFoundIt = guessers.length > 0 && guessers.every(p =>
+      round.guesses.some(g => g.playerSocketId === p.socketId && g.isCorrect)
+    )
+    if (allFoundIt) {
+      console.log(`[round:guess] All guessers found it — ending round early in ${room.id}`)
+      revealRound(io, room, rooms)
     }
 
     console.log(`[round:guess] ${player.pseudo} guessed ${movieTitle} — correct: ${isCorrect}`)
@@ -185,6 +195,26 @@ export function registerRoomHandlers(io: IO, socket: Sock, rooms: Map<string, Ro
       return callback('La manche n\'est pas encore terminée.')
     }
     advanceRound(io, room, rooms)
+    callback(null)
+  })
+
+  // ─── Replay (host only) ──────────────────────────────────────────────────────
+  socket.on('room:replay', (callback) => {
+    const room = getRoomBySocketId(rooms, socket.id)
+    if (!room) return callback('Salon introuvable.')
+    if (room.hostSocketId !== socket.id) return callback('Seul l\'hôte peut relancer une partie.')
+
+    // Reset room to lobby, keep players and config, reset scores
+    room.status = 'lobby'
+    room.currentRound = null
+    room.roundHistory = []
+    room.usedDescriberIds = []
+    room.players.forEach(p => {
+      p.score = 0
+      p.isDescriber = false
+    })
+
+    io.to(room.id).emit('room:updated', toPublicState(room))
     callback(null)
   })
 
@@ -222,12 +252,11 @@ function revealRound(io: IO, room: Room, rooms: Map<string, Room>) {
   const round = room.currentRound
   round.status = 'revealed'
 
-  // Award points to describer if at least one correct guess
+  // Describer earns the same as the first correct guesser
   const describer = room.players.find(p => p.isDescriber)
-  const anyCorrect = round.guesses.some(g => g.isCorrect)
-  if (describer && anyCorrect) {
-    const baseDescriberPoints = 100
-    describer.score += baseDescriberPoints
+  const firstCorrectGuess = round.guesses.find(g => g.isCorrect)
+  if (describer && firstCorrectGuess) {
+    describer.score += firstCorrectGuess.pointsAwarded
   }
 
   const reveal = buildRoundReveal(room)
@@ -243,6 +272,7 @@ function advanceRound(io: IO, room: Room, rooms: Map<string, Room>) {
     room.status = 'finished'
     room.currentRound = null
     const summary = buildGameSummary(room)
+    io.to(room.id).emit('room:updated', toPublicState(room))
     io.to(room.id).emit('game:finished', summary)
     console.log(`[game:finished] ${room.id}`)
     return

@@ -57,11 +57,13 @@ export interface GameSummary {
 export interface ClientToServerEvents {
   'room:create': (pseudo: string, callback: (roomId: string) => void) => void
   'room:join': (roomId: string, pseudo: string, callback: (error: string | null) => void) => void
+  'room:update-config': (config: Partial<RoomConfig>, callback: (error: string | null) => void) => void
   'room:start': (callback: (error: string | null) => void) => void
   'round:select-movie': (movieId: number, movieTitle: string, callback: (error: string | null) => void) => void
   'round:submit-emojis': (emojis: string[], callback: (error: string | null) => void) => void
   'round:guess': (movieId: number, movieTitle: string, callback: (result: GuessResult | null, error: string | null) => void) => void
   'round:next': (callback: (error: string | null) => void) => void
+  'room:replay': (callback: (error: string | null) => void) => void
 }
 
 // Server → Client

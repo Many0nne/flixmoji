@@ -3,35 +3,29 @@ import { Room, Round, RoundReveal, GuessResult } from '../types'
 export function startRound(room: Room, roundNumber: number = 1): Round {
   return {
     roundNumber,
-    movieId: 0,        // set later by describer via round:select-movie
-    movieTitle: '',    // set later
+    movieId: 0,
+    movieTitle: '',
     emojiSequence: [],
     guesses: [],
     timerStartedAt: null,
-    timerDuration: room.config.timerDuration * 1000, // store in ms
+    timerDuration: room.config.timerDuration * 1000,
     status: 'composing',
   }
 }
 
 /**
- * Compute points for a correct guess.
- * Base: 1000 pts. Speed bonus: decays linearly over the timer duration.
- * Penalty: -200 pts per wrong attempt before the correct one.
+ * Points for a correct guess — 1000 baseline with a linear time penalty.
+ *   → Answered at 0s elapsed  : 1000 pts
+ *   → Answered at full timer  : 0 pts
  */
-export function computePoints(
+export function computeGuesserPoints(
   elapsedMs: number,
   timerDurationMs: number,
-  attemptNumber: number
+  attemptNumber: number,
 ): number {
-  const BASE = 1000
-  const MAX_SPEED_BONUS = 500
-  const WRONG_ATTEMPT_PENALTY = 200
-
-  const ratio = Math.max(0, 1 - elapsedMs / timerDurationMs)
-  const speedBonus = Math.round(MAX_SPEED_BONUS * ratio)
-  const penalty = (attemptNumber - 1) * WRONG_ATTEMPT_PENALTY
-
-  return Math.max(0, BASE + speedBonus - penalty)
+  const remainingRatio = Math.max(0, 1 - elapsedMs / timerDurationMs)
+  const penalty = (attemptNumber - 1) * 100
+  return Math.max(0, Math.round(1000 * remainingRatio) - penalty)
 }
 
 export function buildRoundReveal(room: Room): RoundReveal {
