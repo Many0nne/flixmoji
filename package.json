@@ -1,0 +1,16 @@
+{
+  "name": "flixmoji",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "server"
+  ],
+  "scripts": {
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:server": "npm run dev --workspace=server",
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:server\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
